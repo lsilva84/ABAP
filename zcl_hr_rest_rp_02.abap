@@ -74,6 +74,7 @@ CLASS zcl_hr_rest_rp_02 IMPLEMENTATION.
       END OF lw_json_result.
 
 
+    CLEAR e_unidades_organizacionais.
 
     "vai no header
 
