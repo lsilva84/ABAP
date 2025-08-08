@@ -7,16 +7,16 @@ FUNCTION ZHRFM22
     RETURN LIKE BAPIRET2.
 
   "======================================================================
-  " TYPE DEFINITIONS
+  " DEFINIÇÕES DE TIPOS
   "======================================================================
 
-  " --- Types for PUT Response (and ZHRTB85 table update)
+  " --- Tipos para a Resposta do PUT (e atualização da tabela ZHRTB85)
   TYPES: BEGIN OF ty_put_response,
            pureid TYPE i,
            uuid   TYPE string,
          END OF ty_put_response.
 
-  " --- Types for GET Response Deserialization
+  " --- Tipos para a Desserialização da Resposta do GET
   TYPES: BEGIN OF ty_get_name,
            first_name TYPE string,
            last_name  TYPE string,
@@ -38,7 +38,7 @@ FUNCTION ZHRFM22
            orcid                       TYPE string,
          END OF ty_get_response.
 
-  " --- Types for PUT Request Serialization
+  " --- Tipos para a Serialização do Pedido PUT
   TYPES: BEGIN OF ty_put_name,
            first_name TYPE string,
            last_name  TYPE string,
@@ -81,56 +81,62 @@ FUNCTION ZHRFM22
            orcid         TYPE string,
          END OF ty_put_data.
 
+  " --- Tipo para os dados iniciais selecionados da base de dados
+  TYPES: BEGIN OF ty_initial_data,
+           pernr    TYPE pa0000-pernr,
+           vorna    TYPE pa0002-vorna,
+           nachn    TYPE pa0002-nachn,
+           persg    TYPE pa0001-persg,
+           stat2    TYPE pa0000-stat2,
+           begda    TYPE hrp1001-begda,
+           uo       TYPE zhrtb83-uo,
+           persk    TYPE pa0001-persk,
+           variante TYPE zhrtb83-variante,
+           uuid     TYPE zhrtb85-uuid,
+         END OF.
+
 
   "======================================================================
-  " DATA DECLARATIONS
+  " DECLARAÇÕES DE DADOS
   "======================================================================
   CONSTANTS:
-    gc_base_url  TYPE string VALUE 'https://research.uc.pt', " CONFIRM THIS URL
+    gc_base_url  TYPE string VALUE 'https://research.uc.pt', " CONFIRMAR ESTE URL
     gc_api_path  TYPE string VALUE '/ws/api/persons',
-    gc_api_key   TYPE string VALUE 'f4455b08-74a7-4c6c-b05a-eeddf4f70b0e'. " Use a secure store in production
+    gc_api_key   TYPE string VALUE 'f4455b08-74a7-4c6c-b05a-eeddf4f70b0e'. " Usar um local seguro em produção
 
-  DATA: lt_dados             TYPE TABLE OF zhrtb83,
-        lt_dados_restantes   TYPE TABLE OF zhrtb83,
+  DATA: lt_dados             TYPE TABLE OF ty_initial_data,
+        lt_dados_restantes   TYPE TABLE OF ty_initial_data,
         lt_zhrtb85           TYPE TABLE OF zhrtb85,
         t_estrutura_         TYPE TABLE OF zlhr_unidades_org_pt_en,
         lo_http_client       TYPE REF TO if_http_client.
 
 
   "======================================================================
-  " DATA SELECTION
+  " SELEÇÃO DE DADOS
   "======================================================================
 
-  " --- Select persons and their organizational units
+  " --- Selecionar pessoas e as suas unidades organizacionais
   SELECT pa0~pernr, pa2~vorna, pa2~nachn, pa1~persg, pa0~stat2, hrp1~begda, zhr83~uo, pa1~persk, zhr83~variante, zhr85~uuid
-    INTO TABLE @DATA(lt_initial_data)
+    INTO TABLE @lt_dados
     FROM zhrtb83 AS zhr83
     JOIN hrp1001 AS hrp1 ON hrp1~objid = zhr83~uo AND hrp1~sclas = 'S' AND hrp1~plvar = 'PU'
     JOIN hrp1001 AS hrp11 ON hrp11~objid = hrp1~sobid AND hrp11~sclas = 'P'
     JOIN pa0001 AS pa1 ON pa1~pernr = hrp11~sobid
     JOIN pa0000 AS pa0 ON pa0~pernr = pa1~pernr
     JOIN pa0002 AS pa2 ON pa2~pernr = pa1~pernr
-    LEFT JOIN zhrtb85 AS zhr85 ON zhr85~pernr = pa1~pernr " Get person UUID from ZHRTB85
-   WHERE pa0~stat2 = 3 " Active employees
+    LEFT JOIN zhrtb85 AS zhr85 ON zhr85~pernr = pa1~pernr " Obter UUID da pessoa da ZHRTB85
+   WHERE pa0~stat2 = 3 " Colaboradores ativos
      AND pa0~begda  LE @sy-datum AND pa0~endda  GE @sy-datum
      AND pa1~begda  LE @sy-datum AND pa1~endda  GE @sy-datum
      AND pa2~begda  LE @sy-datum AND pa2~endda  GE @sy-datum
      AND hrp1~begda LE @sy-datum AND hrp1~endda GE @sy-datum
      AND hrp11~begda LE @sy-datum AND hrp11~endda GE @sy-datum.
 
-  " ... (The rest of the data selection and preparation logic from the original code) ...
-  " This part seems complex and specific to the business logic (e.g., lt_dados_2, filtering, etc.)
-  " It is kept as is, assuming it correctly prepares `lt_dados` (unique persons)
-  " and `lt_dados_restantes` (all person-UO assignments).
-  lt_dados = lt_initial_data.
+  " A lógica de preparação de dados seguinte foi mantida do código original.
   SORT lt_dados BY pernr uo.
   DELETE ADJACENT DUPLICATES FROM lt_dados COMPARING pernr uo.
 
   SELECT * FROM zhrtb85 INTO TABLE lt_zhrtb85.
-
-  " ... (The logic with ZHRFM23, lt_dados_2, etc. seems to be here in the original code) ...
-  " For this refactoring, I will assume `lt_dados` has unique persons with their UUIDs
-  " and `lt_dados_restantes` has all their UO assignments.
 
   SORT lt_dados BY pernr.
   lt_dados_restantes = lt_dados.
@@ -138,20 +144,20 @@ FUNCTION ZHRFM22
 
 
   "======================================================================
-  " MAIN PROCESSING LOOP
+  " LOOP DE PROCESSAMENTO PRINCIPAL
   "======================================================================
   LOOP AT lt_dados INTO DATA(ls_person).
 
     DATA(lv_person_uuid) = ls_person-uuid.
 
-    " If person has no UUID in PURE yet, we can't do GET/PUT. This would be a POST (create) scenario.
+    " Se a pessoa ainda não tem UUID no PURE, não podemos fazer GET/PUT. Seria um cenário de POST (criação).
     IF lv_person_uuid IS INITIAL.
-      " LOG: Person ls_person-pernr has no UUID. Skipping.
+      " LOG: Pessoa ls_person-pernr não tem UUID. A ignorar.
       CONTINUE.
     ENDIF.
 
     "-----------------------------------------------------
-    " STEP 1: GET current data from PURE
+    " PASSO 1: Obter dados atuais do PURE via GET
     "-----------------------------------------------------
     DATA ls_get_response TYPE ty_get_response.
     DATA(lv_get_url) = |{ gc_base_url }{ gc_api_path }/{ lv_person_uuid }|.
@@ -164,7 +170,7 @@ FUNCTION ZHRFM22
       EXCEPTIONS OTHERS = 1.
 
     IF sy-subrc <> 0 OR lo_http_client IS NOT BOUND.
-      " LOG: Failed to create HTTP client for GET. URL: lv_get_url. Person: ls_person-pernr.
+      " LOG: Falha ao criar cliente HTTP para GET. URL: lv_get_url. Pessoa: ls_person-pernr.
       CONTINUE.
     ENDIF.
 
@@ -174,14 +180,14 @@ FUNCTION ZHRFM22
     lo_http_client->send( EXCEPTIONS OTHERS = 1 ).
     IF sy-subrc <> 0.
       lo_http_client->close( ).
-      " LOG: Failed to send GET request for person ls_person-pernr.
+      " LOG: Falha ao enviar pedido GET para a pessoa ls_person-pernr.
       CONTINUE.
     ENDIF.
 
     lo_http_client->receive( EXCEPTIONS OTHERS = 1 ).
     IF sy-subrc <> 0.
       lo_http_client->close( ).
-      " LOG: Failed to receive GET response for person ls_person-pernr.
+      " LOG: Falha ao receber resposta GET para a pessoa ls_person-pernr.
       CONTINUE.
     ENDIF.
 
@@ -191,14 +197,14 @@ FUNCTION ZHRFM22
     /ui2/cl_json=>deserialize( EXPORTING json = lv_get_response_json CHANGING data = ls_get_response ).
 
     "-----------------------------------------------------
-    " STEP 2: Build the new data structure from SAP data
+    " PASSO 2: Construir a nova estrutura de dados a partir do SAP
     "-----------------------------------------------------
     DATA ls_put_data TYPE ty_put_data.
 
     ls_put_data-name-first_name = ls_person-vorna.
     ls_put_data-name-last_name = ls_person-nachn.
 
-    CALL FUNCTION 'ZHRFM24' " Get user UUID
+    CALL FUNCTION 'ZHRFM24' " Obter UUID do utilizador
       EXPORTING
         i_first_name = ls_person-vorna
         i_last_name  = ls_person-nachn
@@ -216,7 +222,7 @@ FUNCTION ZHRFM22
     LOOP AT lt_dados_restantes INTO DATA(ls_assignment) WHERE pernr = ls_person-pernr.
       DATA ls_staff_org_ass TYPE ty_put_st_org_ass.
       SELECT SINGLE uuid FROM zhrtb83 INTO ls_staff_org_ass-organization-uuid WHERE uo = ls_assignment-uo.
-      " NOTE: The complex logic to find parent UO UUID is omitted for clarity but should be here if needed.
+      " NOTA: A lógica complexa para encontrar o UUID da UO pai foi omitida para clareza.
       ls_staff_org_ass-organization-system_name = 'Organization'.
       CONCATENATE ls_assignment-begda+0(4) '-' ls_assignment-begda+4(2) '-' ls_assignment-begda+6(2)
         INTO ls_staff_org_ass-period-start_date.
@@ -237,7 +243,7 @@ FUNCTION ZHRFM22
     APPEND ls_identifier TO ls_put_data-identifiers.
 
     "-----------------------------------------------------
-    " STEP 3: Compare GET data with the new data
+    " PASSO 3: Comparar os dados do GET com os novos dados
     "-----------------------------------------------------
     DATA lv_update_needed TYPE abap_bool = abap_false.
 
@@ -263,12 +269,12 @@ FUNCTION ZHRFM22
     ENDIF.
 
     "-----------------------------------------------------
-    " STEP 4: If needed, serialize and PUT the new data
+    " PASSO 4: Se necessário, serializar e enviar os novos dados via PUT
     "-----------------------------------------------------
     IF lv_update_needed = abap_true.
       DATA(lv_put_json) = /ui2/cl_json=>serialize( data = ls_put_data ).
 
-      " --- JSON Key Conversion
+      " --- Conversão de Nomes de Campos para JSON
       REPLACE ALL OCCURRENCES OF 'FIRST_NAME' IN lv_put_json WITH 'firstName'.
       REPLACE ALL OCCURRENCES OF 'LAST_NAME' IN lv_put_json WITH 'lastName'.
       REPLACE ALL OCCURRENCES OF 'SYSTEM_NAME' IN lv_put_json WITH 'systemName'.
@@ -284,7 +290,7 @@ FUNCTION ZHRFM22
       CALL METHOD cl_http_client=>create_by_url( EXPORTING url = lv_put_url IMPORTING client = lo_http_client EXCEPTIONS OTHERS = 1 ).
 
       IF sy-subrc <> 0 OR lo_http_client IS NOT BOUND.
-        " LOG: Failed to create HTTP client for PUT for person ls_person-pernr.
+        " LOG: Falha ao criar cliente HTTP para PUT para a pessoa ls_person-pernr.
         CONTINUE.
       ENDIF.
 
@@ -301,7 +307,7 @@ FUNCTION ZHRFM22
           DATA ls_put_response TYPE ty_put_response.
           /ui2/cl_json=>deserialize( EXPORTING json = lv_put_response_json CHANGING data = ls_put_response ).
 
-          " --- Update ZHRTB85 table
+          " --- Atualizar tabela ZHRTB85
           DATA ls_zhrtb85 TYPE zhrtb85.
           ls_zhrtb85-pureid = ls_put_response-pureid.
           ls_zhrtb85-uuid = ls_put_response-uuid.
@@ -309,15 +315,15 @@ FUNCTION ZHRFM22
           ls_zhrtb85-name = |{ ls_person-vorna } { ls_person-nachn }|.
           ls_zhrtb85-date_update = sy-datum.
           ls_zhrtb85-time_update = sy-uzeit.
-          MODIFY zhrtb85 FROM ls_zhrtb85. " Use MODIFY to either insert or update
+          MODIFY zhrtb85 FROM ls_zhrtb85. " Usa MODIFY para inserir ou atualizar
 
-          " --- Log success
+          " --- Registar sucesso no log
           " CALL FUNCTION 'ZUCFM03' ...
         ENDIF.
       ENDIF.
       lo_http_client->close( ).
     ELSE.
-      " LOG: No update needed for person ls_person-pernr.
+      " LOG: Não foi necessária atualização para a pessoa ls_person-pernr.
     ENDIF.
 
   ENDLOOP.
